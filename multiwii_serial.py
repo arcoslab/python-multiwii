@@ -143,21 +143,30 @@ def parse_input():
 
     return((error,data))
 
+import struct
+
 def toraw_data(data, word_size):
-    data_raw=[]
-    for i in xrange(len(data)):
-        for j in xrange(word_size):
-            data_raw+=[((data[i] >> 8*j) & 0xff)]
-    return(data_raw)
+    #print "Data", data
+    return(struct.pack(word_size, *data))
+    # data_raw=[]
+    # for i in xrange(len(data)):
+    #     for j in xrange(word_size):
+    #         data_raw+=[((data[i] >> 8*j) & 0xff)]
+    # return(data_raw)
+
 
 def unraw_data(raw_data, word_size):
-    data=[]
-    for i in xrange(len(raw_data)/word_size):
-        x=0
-        for j in xrange(word_size):
-            x+=(ord(raw_data[i*word_size+j]))<<8*j
-        data.append(x)
-    return(data)
+    #print "Size", len(raw_data)/word_size
+    #print word_size
+    #print "Raw data", raw_data
+    return(struct.unpack(word_size, raw_data))
+#    data=[]
+#    for i in xrange(len(raw_data)/word_size):
+#        x=0
+#        for j in xrange(word_size):
+#            x+=(ord(raw_data[i*word_size+j]))<<8*j
+#        data.append(x)
+#    return(data)
 
 class MultiwiiCopter(object):
     MSP_SET_RAW_RC=200
@@ -182,8 +191,10 @@ class MultiwiiCopter(object):
     S_CHECKSUM=5
     S_ERROR=6
     #msp_dict: cmd: [cmd_data_size, response_data_size, word_size]
-    msp_dict={MSP_SET_RAW_RC: [16, 0, 2],
-              MSP_RC: [0, 16, 2]}
+    msp_dict={MSP_SET_RAW_RC: [16, 0, '='+'h'*8],
+              MSP_RC: [0, 16, '='+'h'*8],
+              MSP_ATTITUDE: [0, 8, '='+'h'*4],
+              MSP_ALTITUDE: [0, 6, '=ih', [0.01, 1.]]}
 
     def __init__(self, serialport="/dev/ttyUSB0", speed=115200):
         self.ser = serial.Serial(serialport, speed, timeout=1)
@@ -193,9 +204,15 @@ class MultiwiiCopter(object):
         self.ser.close()
 
     def send_serial(self, message_type, data):
-        data_raw=toraw_data(data, self.msp_dict[message_type][2])
+        if self.msp_dict[message_type][0]==0:
+            data_raw_chr=''
+        else:
+            data_raw_chr=toraw_data(data, self.msp_dict[message_type][2])
+        #print "Data raw chr", data_raw_chr
+        data_raw=list(struct.unpack('B'*self.msp_dict[message_type][0], data_raw_chr))
+        #print "Data raw", data_raw
         cmd_data_size=self.msp_dict[message_type][0]
-        print "Cmd data size", cmd_data_size
+        #print "Cmd data size", cmd_data_size
         if len(data_raw) != cmd_data_size:
             eprint("Error: data size incorrect for this message type. MSG type: ", message_type, " data size:", len(data), " expected data size:", cmd_data_size)
             return(-1)
@@ -211,12 +228,12 @@ class MultiwiiCopter(object):
             data_raw_chr=''
         checksum=(reduce(lambda x,y:x^y,data_raw+[message_type]+[cmd_data_size]) & 0xff)
         ser_data=self.HEADER+chr(cmd_data_size)+chr(message_type)+data_raw_chr+chr(checksum)
-        print "Data: ", data
-        print "data_raw: ", data_raw
-        print "Checksum: ", hex(checksum)
-        print "data hex", map(hex,data_raw)
-        print "ser_data", map(str,ser_data)
-        print "ser_data_hex", map(ord,ser_data)
+        #print "Data: ", data
+        #print "data_raw: ", data_raw
+        #print "Checksum: ", hex(checksum)
+        #print "data hex", map(hex,data_raw)
+        #print "ser_data", map(str,ser_data)
+        #print "ser_data_hex", map(ord,ser_data)
         self.ser.write(ser_data)
 
     def recv_serial(self):
@@ -225,6 +242,7 @@ class MultiwiiCopter(object):
         checksum=0
         input_packet=''
         while (state!=self.S_END) and (state!=self.S_ERROR):
+            print "in waiting", self.ser.inWaiting()
         #print "Data to read", data_to_read
             c=self.ser.read(data_to_read)
             input_packet+=c
@@ -258,34 +276,42 @@ class MultiwiiCopter(object):
                 else:
                     data_to_read=ord(data_size)
                     state=self.S_DATA
-                print "Command: ", ord(cmd)
+                #print "Command: ", ord(cmd)
             elif state==self.S_DATA:
                 data_raw=c
-                print "Data received", map(ord,data_raw)
+                #print "Data received", map(ord,data_raw)
                 checksum^=reduce(lambda x,y:x^y, map(ord,data_raw))
                 state=self.S_CHECKSUM
                 data_to_read=1
             elif state==self.S_CHECKSUM:
             #print "Calculated checksum: ", checksum, " Received checksum: ", ord(c)
                 if checksum!=ord(c):
-                    print "Error in checksum"
+                    eprint("Error in checksum")
                     state=self.S_ERROR
                 else:
-                    print "Checksum is right"
+                    #print "Checksum is right"
                     state=self.S_END
         if state==self.S_END:
             error=0
             if len(data_raw)!= self.msp_dict[ord(cmd)][1]:
-                eprint("Error: incorrect response size!")
+                eprint("Error: incorrect response size! Got:", len(data_raw), " should be:", self.msp_dict[ord(cmd)][1])
                 return((-1,[]))
-            data=unraw_data(data_raw, self.msp_dict[ord(cmd)][2])
+            #print "Cmd", ord(cmd)
+            #print "Raw data", data_raw, "test"
+            if self.msp_dict[ord(cmd)][1]!=0:
+                  data=unraw_data(data_raw, self.msp_dict[ord(cmd)][2])
+                  if len(self.msp_dict[ord(cmd)])>=4:
+                      data=[i*mult for i, mult in zip(self.msp_dict[ord(cmd)][3], data)]
+            else:
+                  data=[]
             os.write(master,input_packet)
         else: #error
             eprint("input_packet: ", input_packet, map(ord, input_packet))
             data=[]
+            cmd=chr(-1)
             error=1
             self.ser.flushInput()
-        return((error,data))
+        return((error,[ord(cmd),data]))
 
 
     def rc_cmd(self, cmd):
@@ -293,14 +319,44 @@ class MultiwiiCopter(object):
         error,cmd_resp=self.recv_serial()
         if error!=0:
             eprint("RC command didn't work!")
-        return(error)
+        return(error, cmd_resp)
+
+    def rc_read(self):
+        self.send_serial(self.MSP_RC, [])
+        error, cmd_resp=self.recv_serial()
+        if error!=0:
+            eprint("RC read didn't work!")
+        return(error, cmd_resp)
+
+    def get_attitude(self):
+        self.send_serial(self.MSP_ATTITUDE, [])
+        error, cmd_resp=self.recv_serial()
+        if error!=0:
+            eprint("RC attitude didn't work!")
+        return(error, cmd_resp)
+
+    def get_altitude(self):
+        self.send_serial(self.MSP_ALTITUDE, [])
+        error, cmd_resp=self.recv_serial()
+        if error!=0:
+            eprint("RC ALTITUDE didn't work!")
+        return(error, cmd_resp)
+
 
 def main():
     copter=MultiwiiCopter()
     while True:
         #l_time+=1
         rc_cmd=[1230]*8
-        copter.rc_cmd(rc_cmd)
+        error, resp=copter.rc_cmd(rc_cmd)
+        print "RC cmd resp:", error, resp
+        error, resp=copter.rc_read()
+        print "RC read resp:", error, resp
+        error, resp=copter.get_attitude()
+        print "Attitude resp:", error, resp
+        error, resp=copter.get_altitude()
+        print "Altitude resp:", error, resp
+
     # raw_input()
     # print
     # print "Time: ", time
