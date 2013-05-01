@@ -1,0 +1,136 @@
+
+New Multiwii Serial Protocol
+
+Postby Alexinparis » Mon Apr 09, 2012 8:20 pm
+MultiWii Serial Protocol
+
+updated 04 July
+
+
+Multiwii serial protocol was redesigned:
+
+    to be light, as before
+    to be generic: it can be used transparenlty by a GUI, OSD, telemetry or home made config tool.
+    ie no more specific OSD code should be coded in multiwii
+    to be bit wire efficient: only requested data are transmitted in a binary format
+    to be quite secure: data are sent with a checksum, preventing corrupted configuration to be injected.
+    to be header sensitive: as it is designed with a specific header, it can be mixed with other frame, like GPS frame
+    ie, it will be possible to connect either a GUI or a GPS on the same serial port without changing the conf
+    to be less sensitive to evolutions:
+    ie in case of parameter evolution, the main protocol will remain compatible and the GUI will be much less version dependent.
+    variable data length allows to consider only the beginning of a message, leaving the other octets at the end to extend transparently the message (for instance to add a new PID)
+
+
+I thought first about an implementation of Mavlink, but I think it's not what I was looking for.
+Even with a partial implementation, the predefined structures are not light enough for what I have in mind.
+Some messages are however inspired from mavlink structure.
+
+The main rule remains: Multiwii never sends something on its own.
+A request must be done in each case to retrieve or set data.
+Each messages received are acknowledged even if there is no data inside.
+
+There are 2 main messages to consider:
+
+    request message to multiwii
+    multiwii output message
+
+
+request message to multiwii
+To request simple data without parameters / send a specific command / inject new parameters in multiwii
+messages are formated like this:
+$M>[data length][code][data][checksum]
+1 octet '$'
+1 octet 'M'
+1 octet '<'
+1 octet [data length]
+1 octet [code]
+several octets [data]
+1 octet [checksum]
+
+[data length] can be 0 in case of no param command
+
+multiwii output message
+messages are formated like this:
+$M>[data length][code][data][checksum]
+1 octet '$'
+1 octet 'M'
+1 octet '>'
+1 octet [data length]
+1 octet [code]
+several octets [data]
+1 octet [checksum]
+
+if the message is unknown:
+$M|[0][code][checksum]
+1 octet '$'
+1 octet 'M'
+1 octet '|'
+1 octet 0
+1 octet [unknown code]
+1 octet [checksum]
+
+
+list of message codes
+multiwii output message
+MSP_IDENT
+multitype + version
+MSP_STATUS
+cycletime & errors_count & sensor present & box activation
+MSP_RAW_IMU
+9 DOF output
+MSP_SERVO
+8 servos
+MSP_MOTOR
+8 motors
+MSP_RC
+8 rc chan
+MSP_RAW_GPS
+fix, numsat, lat, lon, alt, speed
+MSP_COMP_GPS
+distance to home, direction to home
+MSP_ATTITUDE
+angles and heading
+MSP_ALTITUDE
+altitude
+MSP_BAT
+vbat, powermetersum
+MSP_RC_TUNING
+rc rate, rc expo, rollpitch rate, yaw rate, dyn throttle PID
+MSP_PID
+table of P I D
+MSP_BOX
+tabl of checkbox
+MSP_MISC
+powermeter trig
+MSP_MOTOR_PINS
+which pins are in use for motors & servos, for GUI
+MSP_BOXNAMES
+the textual aux switch names (it's a way to build a more generic GUI, allowing an easier extension for future checkbox)
+MSP_PIDNAMES
+the textual PID names
+MSP_WP
+get a WP, WP# is in the payload, returns (WP#, lat, lon, alt, flags) WP#0-home, WP#16-poshold
+MSP_DEBUG
+debug1,debug2,debug3,debug4 variable
+
+multiwii input message
+MSP_SET_RAW_RC
+8 rc chan: it's a way to command multiwii via a "serial RC transmitter"
+MSP_SET_RAW_GPS
+fix, numsat, lat, lon, alt, speed: it's a way to inject in multiwii GPS data coming for instance from an OSD with an integrated GPS
+MSP_SET_PID
+8 P I D
+MSP_SET_BOX
+11 checkbox
+MSP_SET_RC_TUNING
+rc rate, rc expo, rollpitch rate, yaw rate, dyn throttle PID
+MSP_ACC_CALIBRATION
+to calibrate ACC
+MSP_MAG_CALIBRATION
+to calibrate MAG
+MSP_SET_MISC
+powermeter trig
+MSP_RESET_CONF
+to reset all params to default (new feature)
+MSP_EEPROM_WRITE
+to write current params to EEPROM
