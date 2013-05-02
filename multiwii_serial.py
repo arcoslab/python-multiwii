@@ -197,7 +197,7 @@ class MultiwiiCopter(object):
               MSP_ATTITUDE: [0, 8, '', '='+'h'*4],
               MSP_ALTITUDE: [0, 6, '', '=ih', [0.01, 1.]],
               MSP_STATUS: [0, 11, '', '='+'hhhIB'],
-              MSP_CONTROL: [16, 14, '='+'h'*8, '='+'h'*7, [0.1, 0.1, 1., 1., 1., 1., 1.]]}
+              MSP_CONTROL: [16, 14, '='+'h'*8, '='+'h'*7, [0.1, 0.1, -1., 1., 1., 1., 1.]]}
 
     def __init__(self, serialport="/dev/ttyUSB0", speed=115200):
         self.ser = serial.Serial(serialport, speed, timeout=1)
@@ -359,27 +359,97 @@ class MultiwiiCopter(object):
             eprint("STATUS didn't work!")
         return(error, cmd_resp)
 
-
+from numpy import array, pi, dot
+from numpy.linalg import norm, inv
+from arcospyu.kdl_helpers import kdl_helpers as kh
+from arcospyu.robot_tools import robot_trans as rt
 class Copter(object):
-    def __init__(self):
-        self.copter_serial=MultiwiiCopter(speed=1000000)
+    G=9.81 #m/s^2
+    G_vec=[0., 0., -G]
+    G_frame=[[1., 0., 0., 0.],
+             [0., 1., 0., 0.],
+             [0., 0., 1., G],
+             [0., 0., 0., 1.]]
+    raw_acc_trans=array([[0., 1., 0.],
+                   [-1., 0., 0.],
+                   [0., 0., -1.]])
+    att_trans=array([[1., 0., 0.],
+                     [0., 1., 0.],
+                     [0., 0., 1.]])
+    def __init__(self, speed=115200):
+        self.copter_serial=MultiwiiCopter(speed=speed)
         self.cmd=[1000]+[1500]*7
+        self.attitude=array([0.]*3)
+        self.acc_raw=array([0.]*3)
+        self.acc=array([0.]*3)
+        self.copter_control_freq=0.
+        self.x=array([0.]*3)
+        self.num_grav_measures=100
+        self.grav_cal_const=1.
+        self.delta_time=0.
+        self.old_time=time()
+        self.vel=array([0.]*3)
 
-    def update(self):
+    def update_sensors(self):
+        self.update_delta_time()
+        #print "delta", self.delta_time
         error, resp=self.copter_serial.control(self.cmd)
         if error==0:
             if resp[1][-1]>0:
                 self.copter_control_freq=1000000./resp[1][-1]
-            self.attitude=resp[1][:3]
-            self.acc=resp[1][3:6]
+            self.attitude=dot(self.att_trans,array(resp[1][:3])*pi/180.)
+            self.attitude_frame=kh.rpy_to_rot_matrix(self.attitude)
+            #print "frame: ", self.attitude_frame
+            #print "Att: ", self.attitude
+            #print "G vec: ", self.G_vec
+            #print "frame inv: ", inv(self.attitude_frame)
+            self.acc_expected=dot(inv(self.attitude_frame),self.G_vec)
+            #print "Expected acc", self.acc_expected,
+            self.acc_raw=dot(self.raw_acc_trans,array(resp[1][3:6]))
+            #self.acc_raw_mag_rot=kh.rpy_to_rot_matrix(array([0., 0., self.attitude[2]]))
+            #self.acc_raw=dot(self.acc_raw_mag_rot, self.acc_raw)
+            self.acc=self.acc_raw*self.grav_cal_const
+            self.acc_comp=dot(self.attitude_frame,self.acc_expected-self.acc)
+            #print "ACC_Comp", self.acc_comp, "Diff norm", norm(self.acc_comp)
+            return(0)
+        else:
+            return(-1)
+
+    def calc_grav(self):
+        grav_measure=0.
+        for i in xrange(self.num_grav_measures):
+            #print "Norm", norm(self.acc_raw)
+            while not (self.update_sensors()==0):
+                print "No updates ready yet"
+            grav_measure=grav_measure*(float(i)/(i+1.))+norm(self.acc_raw)*(1./(i+1.))
+            #print "Grav", grav_measure
+        #print "Grav measure", grav_measure
+        self.grav_cal_const=self.G/grav_measure
+        #print "Grav cal const", self.grav_cal_const
+        #kh.my_diff(G_frame, 
+        raw_input()
+
+    def update_delta_time(self):
+        t=time()
+        self.delta_time=t-self.old_time
+        self.old_time=t
+
+    def update_vel(self):
+        self.vel+=self.acc_comp*self.delta_time
+        print "Vel:", self.vel, "Acc:", self.acc_comp,
+
+    def update_pos(self):
+        self.x+=self.vel*self.delta_time
+        print "Pos", self.x
 
 from time import time, sleep
 
 def main():
-    copter=MultiwiiCopter(speed=1000000)
+    copter=Copter(speed=115200)
     first=True
     counter=0
     rc_cmd=[1230]*8
+    copter.calc_grav()
     while True:
         cur_time=time()
         if not first:
@@ -402,14 +472,10 @@ def main():
         #print "Altitude resp:", error, resp
         #error, resp=copter.get_status()
         #print "Status:", resp, "Freq: ", 1000000./resp[1][0]
-        error, resp=copter.control(rc_cmd)
-        if error==0:
-            for i in xrange(len(rc_cmd)):
-                rc_cmd[i]+=1
-                if rc_cmd[i]>=2000:
-                    rc_cmd[i]=0
-            if resp[1][-1]>0:
-                print "Resp: ", resp, "Freq: ", 1000000./resp[1][-1]
+        copter.update_sensors()
+        copter.update_vel()
+        copter.update_pos()
+        #print "Freq:", copter.copter_control_freq, " Att:", copter.attitude, "acc:", copter.acc, "norm", norm(copter.acc)
 
     # raw_input()
     # print
