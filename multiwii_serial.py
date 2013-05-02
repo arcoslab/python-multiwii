@@ -22,7 +22,7 @@ from arcospyu.dprint import eprint
 master,slave=pty.openpty()
 print os.ttyname(slave)
 print "Create a symbolic link in /dev/ to the above file and use this symlink to connect with MultiWiiConf to help in debugging. Press enter when ready"
-raw_input()
+#raw_input()
 
 l_time=0
 
@@ -177,6 +177,7 @@ class MultiwiiCopter(object):
     MSP_STATUS=101
     MSP_ATTITUDE=108
     MSP_RC_TUNING=111
+    MSP_CONTROL=120
     MSP_RAW_GPS=106
     MSP_COMP_GPS=107
     MSP_ALTITUDE=109
@@ -192,9 +193,11 @@ class MultiwiiCopter(object):
     S_ERROR=6
     #msp_dict: cmd: [cmd_data_size, response_data_size, word_size]
     msp_dict={MSP_SET_RAW_RC: [16, 0, '='+'h'*8],
-              MSP_RC: [0, 16, '='+'h'*8],
-              MSP_ATTITUDE: [0, 8, '='+'h'*4],
-              MSP_ALTITUDE: [0, 6, '=ih', [0.01, 1.]]}
+              MSP_RC: [0, 16, '', '='+'h'*8],
+              MSP_ATTITUDE: [0, 8, '', '='+'h'*4],
+              MSP_ALTITUDE: [0, 6, '', '=ih', [0.01, 1.]],
+              MSP_STATUS: [0, 11, '', '='+'hhhIB'],
+              MSP_CONTROL: [16, 14, '='+'h'*8, '='+'h'*7, [0.1, 0.1, 1., 1., 1., 1., 1.]]}
 
     def __init__(self, serialport="/dev/ttyUSB0", speed=115200):
         self.ser = serial.Serial(serialport, speed, timeout=1)
@@ -242,11 +245,11 @@ class MultiwiiCopter(object):
         checksum=0
         input_packet=''
         while (state!=self.S_END) and (state!=self.S_ERROR):
-            print "in waiting", self.ser.inWaiting()
+            #print "in waiting", self.ser.inWaiting()
         #print "Data to read", data_to_read
             c=self.ser.read(data_to_read)
             input_packet+=c
-        #print "c: ", map(str,c), map(ord,c)
+            #print "c: ", map(str,c), map(ord,c)
             if state==self.S_HEADER:
                 if c=='$':
                     c=self.ser.read(2)
@@ -299,16 +302,16 @@ class MultiwiiCopter(object):
             #print "Cmd", ord(cmd)
             #print "Raw data", data_raw, "test"
             if self.msp_dict[ord(cmd)][1]!=0:
-                  data=unraw_data(data_raw, self.msp_dict[ord(cmd)][2])
-                  if len(self.msp_dict[ord(cmd)])>=4:
-                      data=[i*mult for i, mult in zip(self.msp_dict[ord(cmd)][3], data)]
+                  data=unraw_data(data_raw, self.msp_dict[ord(cmd)][3])
+                  if len(self.msp_dict[ord(cmd)])>=5:
+                      data=[i*mult for i, mult in zip(self.msp_dict[ord(cmd)][4], data)]
             else:
                   data=[]
             #os.write(master,input_packet)
         else: #error
             eprint("input_packet: ", input_packet, map(ord, input_packet))
             data=[]
-            cmd=chr(-1)
+            cmd=chr(0)
             error=1
             self.ser.flushInput()
         return((error,[ord(cmd),data]))
@@ -319,6 +322,13 @@ class MultiwiiCopter(object):
         error,cmd_resp=self.recv_serial()
         if error!=0:
             eprint("RC command didn't work!")
+        return(error, cmd_resp)
+
+    def control(self, cmd):
+        self.send_serial(self.MSP_CONTROL, cmd)
+        error,cmd_resp=self.recv_serial()
+        if error!=0:
+            eprint("CONTROL didn't work!")
         return(error, cmd_resp)
 
     def rc_read(self):
@@ -342,20 +352,64 @@ class MultiwiiCopter(object):
             eprint("RC ALTITUDE didn't work!")
         return(error, cmd_resp)
 
+    def get_status(self):
+        self.send_serial(self.MSP_STATUS, [])
+        error, cmd_resp=self.recv_serial()
+        if error!=0:
+            eprint("STATUS didn't work!")
+        return(error, cmd_resp)
+
+
+class Copter(object):
+    def __init__(self):
+        self.copter_serial=MultiwiiCopter(speed=1000000)
+        self.cmd=[1000]+[1500]*7
+
+    def update(self):
+        error, resp=self.copter_serial.control(self.cmd)
+        if error==0:
+            if resp[1][-1]>0:
+                self.copter_control_freq=1000000./resp[1][-1]
+            self.attitude=resp[1][:3]
+            self.acc=resp[1][3:6]
+
+from time import time, sleep
 
 def main():
-    copter=MultiwiiCopter()
+    copter=MultiwiiCopter(speed=1000000)
+    first=True
+    counter=0
+    rc_cmd=[1230]*8
     while True:
+        cur_time=time()
+        if not first:
+            period=cur_time-old_time
+            if counter==100:
+                print "Period: ", period, "Freq: ", 1./period
+                counter=0
+            else:
+                counter+=1
+        first=False
+        old_time=cur_time
         #l_time+=1
-        rc_cmd=[1230]*8
-        error, resp=copter.rc_cmd(rc_cmd)
-        print "RC cmd resp:", error, resp
-        error, resp=copter.rc_read()
-        print "RC read resp:", error, resp
-        error, resp=copter.get_attitude()
-        print "Attitude resp:", error, resp
-        error, resp=copter.get_altitude()
-        print "Altitude resp:", error, resp
+        #error, resp=copter.rc_cmd(rc_cmd)
+        #print "RC cmd resp:", error, resp
+        #error, resp=copter.rc_read()
+        #print "RC read resp:", error, resp
+        #error, resp=copter.get_attitude()
+        #print "Attitude resp:", error, resp
+        #error, resp=copter.get_altitude()
+        #print "Altitude resp:", error, resp
+        #error, resp=copter.get_status()
+        #print "Status:", resp, "Freq: ", 1000000./resp[1][0]
+        error, resp=copter.control(rc_cmd)
+        if error==0:
+            for i in xrange(len(rc_cmd)):
+                rc_cmd[i]+=1
+                if rc_cmd[i]>=2000:
+                    rc_cmd[i]=0
+            if resp[1][-1]>0:
+                print "Resp: ", resp, "Freq: ", 1000000./resp[1][-1]
 
     # raw_input()
     # print
@@ -434,10 +488,8 @@ def main():
     # print "Error: ", error
     # print "Data: ", data
 
-        if error==1:
-            pass
         #break
-        time.sleep(0.1)
+        #time.sleep(0.01)
     
 
 if __name__=="__main__":
