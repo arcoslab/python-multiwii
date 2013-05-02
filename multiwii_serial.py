@@ -304,7 +304,7 @@ class MultiwiiCopter(object):
                       data=[i*mult for i, mult in zip(self.msp_dict[ord(cmd)][3], data)]
             else:
                   data=[]
-            os.write(master,input_packet)
+            #os.write(master,input_packet)
         else: #error
             eprint("input_packet: ", input_packet, map(ord, input_packet))
             data=[]
